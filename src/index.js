@@ -13,8 +13,11 @@ app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: false,
+  optionsSuccessStatus: 200
 }));
+
+app.use(express.json());
 
 // Determine allowed origins based on environment
 const allowedOrigins = ['*'];  // Allow all origins for now
@@ -22,12 +25,12 @@ if (process.env.NODE_ENV === 'production') {
   allowedOrigins.push(process.env.CLIENT_URL_PROD);
 }
 
-const io = new Server(server, {
+const io = require('socket.io')(server, {
   cors: {
-    origin: '*',
-    methods: ["GET", "POST", "OPTIONS"],
+    origin: "*",
+    methods: ["GET", "POST"],
     allowedHeaders: ["*"],
-    credentials: true
+    credentials: false
   },
   allowEIO3: true,
   transports: ['polling', 'websocket'],
@@ -35,12 +38,12 @@ const io = new Server(server, {
   pingInterval: 25000,
   upgradeTimeout: 30000,
   maxHttpBufferSize: 1e8,
-  path: '/socket.io/',
-  serveClient: false,
-  cookie: false,
-  connectTimeout: 45000,
+  allowUpgrades: true,
   perMessageDeflate: {
-    threshold: 32768
+    threshold: 1024
+  },
+  httpCompression: {
+    threshold: 1024
   }
 });
 

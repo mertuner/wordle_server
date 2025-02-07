@@ -3,29 +3,53 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { getRandomWord } = require('./utils/wordUtils');
+require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS for all routes
-app.use(cors());
+// Enable CORS for all routes with specific configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// Determine allowed origins based on environment
+const allowedOrigins = ['*'];  // Allow all origins for now
+if (process.env.NODE_ENV === 'production') {
+  allowedOrigins.push(process.env.CLIENT_URL_PROD);
+}
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    allowedHeaders: ["my-custom-header"],
+    origin: '*',
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["*"],
     credentials: true
   },
-  // Add connection handling options
+  allowEIO3: true,
+  transports: ['polling', 'websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  transports: ['websocket', 'polling'],
-  allowEIO3: true,
-  connectTimeout: 30000,
+  upgradeTimeout: 30000,
   maxHttpBufferSize: 1e8,
-  path: '/socket.io',
-  serveClient: false
+  path: '/socket.io/',
+  serveClient: false,
+  cookie: false,
+  connectTimeout: 45000,
+  perMessageDeflate: {
+    threshold: 32768
+  }
+});
+
+// Add middleware to handle upgrade requests
+server.on('upgrade', (request, socket, head) => {
+  console.log('Upgrade request received');
+  socket.on('error', (err) => {
+    console.error('Socket upgrade error:', err);
+  });
 });
 
 // Store active rooms and matchmaking queue

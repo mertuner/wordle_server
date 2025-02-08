@@ -10,36 +10,39 @@ const server = http.createServer(app);
 
 // Enable CORS for all routes with specific configuration
 app.use(cors({
-  origin: '*',
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.CLIENT_URL_PROD]
+    : '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false,
+  credentials: true,
   optionsSuccessStatus: 200
 }));
 
 app.use(express.json());
 
 // Determine allowed origins based on environment
-const allowedOrigins = ['*'];  // Allow all origins for now
-if (process.env.NODE_ENV === 'production') {
-  allowedOrigins.push(process.env.CLIENT_URL_PROD);
-}
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? [process.env.CLIENT_URL_PROD]
+  : ['*'];
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: process.env.NODE_ENV === 'production'
+      ? process.env.CLIENT_URL_PROD
+      : "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["*"],
-    credentials: false
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true
   },
-  transports: ['polling'],
-  pingTimeout: 10000,
-  pingInterval: 5000,
-  upgradeTimeout: 5000,
-  allowUpgrades: false,
+  transports: ['websocket', 'polling'],
+  pingTimeout: 30000,
+  pingInterval: 10000,
+  upgradeTimeout: 15000,
+  allowUpgrades: true,
   maxHttpBufferSize: 1e6,
   path: '/socket.io/',
-  connectTimeout: 10000,
+  connectTimeout: 30000,
   allowEIO3: true,
   cookie: false
 });

@@ -28,17 +28,31 @@ if (process.env.NODE_ENV === 'production') {
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["*"],
     credentials: false
   },
   transports: ['polling'],
-  pingTimeout: 30000,
-  pingInterval: 10000,
-  upgradeTimeout: 15000,
+  pingTimeout: 10000,
+  pingInterval: 5000,
+  upgradeTimeout: 5000,
   allowUpgrades: false,
   maxHttpBufferSize: 1e6,
-  path: '/socket.io'
+  path: '/socket.io/',
+  connectTimeout: 10000,
+  allowEIO3: true,
+  cookie: false
+});
+
+// Add connection logging middleware
+io.use((socket, next) => {
+  console.log('Connection attempt:', {
+    id: socket.id,
+    transport: socket.handshake.query.transport,
+    platform: socket.handshake.query.platform,
+    client: socket.handshake.query.client
+  });
+  next();
 });
 
 // Store active rooms and matchmaking queue
@@ -358,4 +372,137 @@ io.on('connection', (socket) => {
         room.status = 'playing';
         console.log(`\n🎲 Starting game in room ${roomCode}`);
         console.log(`Target word: ${room.targetWord}`);
-        console.log(`
+        console.log(`Players: ${room.players.join(', ')}`);
+
+        // Emit game start to all players in the room
+        io.to(roomCode).emit('gameStart', {
+          targetWord: room.targetWord,
+          players: room.players,
+          roomCode: roomCode
+        });
+        
+        console.log(`\n🎯 Game started in room ${roomCode}`);
+        logRoomStatus(roomCode, 'Game Started');
+      }
+    }
+  });
+
+  socket.on('makeGuess', ({ roomCode, guess }) => {
+    console.log(`\n📝 Guess received in room ${roomCode}`);
+    console.log(`Player: ${socket.id}`);
+    console.log(`Guess: ${guess}`);
+
+    const room = rooms.get(roomCode);
+    if (!room || room.status !== 'playing') {
+      console.log(`❌ Invalid guess - Room ${roomCode} not found or not playing`);
+      return;
+    }
+
+    const playerNumber = room.players.indexOf(socket.id) + 1;
+    
+    if (!room.guesses) {
+      room.guesses = new Map();
+    }
+    
+    if (!room.guesses.has(socket.id)) {
+      room.guesses.set(socket.id, []);
+    }
+    
+    const playerGuesses = room.guesses.get(socket.id);
+    playerGuesses.push(guess);
+
+    console.log(`\n📢 Broadcasting guess to room ${roomCode}`);
+    // Broadcast the guess to all players in the room
+    io.to(roomCode).emit('guessUpdate', {
+      playerId: socket.id,
+      guess: guess
+    });
+
+    const isCorrect = guess.toUpperCase() === room.targetWord;
+    if (isCorrect) {
+      room.status = 'finished';
+      console.log(`\n🏆 Player ${socket.id} won in room ${roomCode}`);
+      io.to(roomCode).emit('gameOver', {
+        winner: socket.id,
+        winnerNumber: playerNumber,
+        targetWord: room.targetWord
+      });
+      setTimeout(() => {
+        if (rooms.has(roomCode)) {
+          rooms.delete(roomCode);
+          console.log(`\n🧹 Room ${roomCode} deleted after game over`);
+        }
+      }, 5000);
+    } else if (playerGuesses.length >= 6) {
+      const otherPlayer = room.players.find(id => id !== socket.id);
+      const otherPlayerGuesses = room.guesses.get(otherPlayer) || [];
+      
+      if (otherPlayerGuesses.length >= 6) {
+        room.status = 'finished';
+        console.log(`\n🤝 Game ended in draw in room ${roomCode}`);
+        io.to(roomCode).emit('gameOver', {
+          winner: null,
+          targetWord: room.targetWord,
+          isDraw: true
+        });
+        setTimeout(() => {
+          if (rooms.has(roomCode)) {
+            rooms.delete(roomCode);
+            console.log(`\n🧹 Room ${roomCode} deleted after draw`);
+          }
+        }, 5000);
+      }
+    }
+
+    logRoomStatus(roomCode, 'After Guess');
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`\n👋 Client disconnected: ${socket.id}`);
+    
+    // Remove from matchmaking queue if present
+    matchmakingQueue.delete(socket.id);
+    
+    // Handle disconnection for the room this socket was in
+    if (currentRoom) {
+      const room = rooms.get(currentRoom);
+      if (room) {
+        console.log(`\n🚪 Player ${socket.id} left room ${currentRoom}`);
+        
+        // Remove the player from the room
+        room.players = room.players.filter(id => id !== socket.id);
+        
+        // If there are still players in the room, notify them
+        if (room.players.length > 0 && room.status === 'playing') {
+          console.log(`\n📢 Notifying remaining players in room ${currentRoom}`);
+          io.to(currentRoom).emit('playerLeft', { playerId: socket.id });
+        }
+        
+        // If the room is empty or the game hasn't started, delete it
+        if (room.players.length === 0 || room.status === 'waiting') {
+          console.log(`\n🧹 Deleting room ${currentRoom}`);
+          rooms.delete(currentRoom);
+        }
+
+        logRoomStatus(currentRoom, 'After Disconnect');
+      }
+    }
+    
+    // Log actual connection count
+    setImmediate(() => {
+      console.log(`Actual connections after cleanup: ${io.engine.clientsCount}`);
+    });
+  });
+
+  // Handle ping to keep connection alive
+  socket.on('ping', (callback) => {
+    if (typeof callback === 'function') {
+      callback();
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`\n🚀 Server running on port ${PORT}`);
+}); 

@@ -10,12 +10,10 @@ const server = http.createServer(app);
 
 // Enable CORS for all routes with specific configuration
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? [process.env.CLIENT_URL_PROD]
-    : '*',
+  origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  credentials: false,
   optionsSuccessStatus: 200
 }));
 
@@ -28,32 +26,36 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.NODE_ENV === 'production'
-      ? process.env.CLIENT_URL_PROD
-      : "*",
+    origin: "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true
+    allowedHeaders: ["*"],
+    credentials: false,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   },
-  transports: ['websocket', 'polling'],
-  pingTimeout: 30000,
-  pingInterval: 10000,
-  upgradeTimeout: 15000,
-  allowUpgrades: true,
+  transports: ['polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
+  allowUpgrades: false,
   maxHttpBufferSize: 1e6,
   path: '/socket.io/',
-  connectTimeout: 30000,
+  connectTimeout: 60000,
   allowEIO3: true,
-  cookie: false
+  cookie: false,
+  perMessageDeflate: false,
+  httpCompression: true
 });
 
-// Add connection logging middleware
+// Add connection logging middleware with more details
 io.use((socket, next) => {
   console.log('Connection attempt:', {
     id: socket.id,
-    transport: socket.handshake.query.transport,
-    platform: socket.handshake.query.platform,
-    client: socket.handshake.query.client
+    transport: socket.conn?.transport?.name,
+    platform: socket.handshake?.auth?.platform,
+    client: socket.handshake?.auth?.client,
+    address: socket.handshake?.address,
+    headers: socket.handshake?.headers
   });
   next();
 });

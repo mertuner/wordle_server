@@ -2,11 +2,11 @@
   "name": "wordle-multiplayer-server",
   "version": "1.0.0",
   "description": "Backend server for multiplayer Wordle game",
-  "main": "src/index.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
-    "prod": "NODE_ENV=production node src/index.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "prod": "NODE_ENV=production node src/server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

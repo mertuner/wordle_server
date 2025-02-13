@@ -2,14 +2,29 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const { words } = require('./utils/wordle-list.json');
+const PlayerStats = require('./models/PlayerStats');
 
 const app = express();
 const httpServer = createServer(app);
 
+// Add body parsing middleware
+app.use(express.json());
+
+// Add CORS middleware
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST", "PUT"]
   },
   // Socket.io configuration
   pingTimeout: 20000,
@@ -107,7 +122,8 @@ function createGameRoom(player1Id, player2Id) {
     status: 'playing',
     guesses: new Map(),
     createdAt: new Date(),
-    isQuickMatch: true
+    isQuickMatch: true,
+    playerStats: new Map()
   });
   
   // Store room mapping for both players
@@ -597,6 +613,87 @@ io.on('connection', (socket) => {
     console.log('Matchmaking queue:', matchmakingQueue.length);
     console.log('Active rooms:', gameRooms.size);
   });
+
+  // Add handler for player authentication
+  socket.on('authenticate', async ({ userId, username }) => {
+    try {
+      let stats = await PlayerStats.getStats(userId);
+      if (!stats) {
+        stats = await PlayerStats.createStats(userId, username);
+      }
+      socket.userId = userId; // Store userId in socket for later use
+      socket.emit('authenticated', { stats });
+    } catch (error) {
+      console.error('Authentication error:', error);
+      socket.emit('error', { message: 'Authentication failed' });
+    }
+  });
+
+  // Update game end handling
+  socket.on('gameEnd', async ({ roomCode, won, guesses }) => {
+    console.log('\n🎮 === GAME END ===');
+    console.log('Room code:', roomCode);
+    console.log('Player:', socket.id);
+    console.log('Won:', won);
+    console.log('Guesses:', guesses.length);
+
+    const room = gameRooms.get(roomCode);
+    if (!room) {
+      console.log('❌ Room not found');
+      return;
+    }
+
+    const playerIndex = room.players.indexOf(socket.id);
+    if (playerIndex === -1) {
+      console.log('❌ Player not in room');
+      return;
+    }
+
+    try {
+      // Get opponent's socket and stats
+      const opponentId = room.players[1 - playerIndex];
+      const opponentSocket = io.sockets.sockets.get(opponentId);
+      const opponentStats = opponentSocket?.userId ? 
+        await PlayerStats.getStats(opponentSocket.userId) : null;
+
+      // Update player's stats
+      if (socket.userId) {
+        console.log('📊 Updating stats for player:', socket.userId);
+        const stats = await PlayerStats.updateStats(socket.userId, {
+          won,
+          guesses: guesses.length,
+          opponentRating: opponentStats?.rating
+        });
+
+        // Emit updated stats to both players
+        io.to(roomCode).emit('statsUpdate', {
+          playerId: socket.id,
+          stats
+        });
+
+        // If both players have finished, update opponent's stats too
+        if (room.guesses.size === 2 && opponentSocket?.userId) {
+          const opponentWon = !won;
+          const opponentGuesses = room.guesses.get(opponentId) || [];
+          
+          console.log('📊 Updating stats for opponent:', opponentSocket.userId);
+          const opponentUpdatedStats = await PlayerStats.updateStats(opponentSocket.userId, {
+            won: opponentWon,
+            guesses: opponentGuesses.length,
+            opponentRating: stats.rating
+          });
+
+          io.to(roomCode).emit('statsUpdate', {
+            playerId: opponentId,
+            stats: opponentUpdatedStats
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error updating player stats:', error);
+      socket.emit('error', { message: 'Failed to update stats' });
+    }
+  });
 });
 
 // Clean up inactive rooms every minute
@@ -612,6 +709,64 @@ app.get('/health', (req, res) => {
     rooms: gameRooms.size,
     queue: matchmakingQueue.length
   });
+});
+
+// Add new endpoint for leaderboard
+app.get('/leaderboard', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const leaderboard = await PlayerStats.getLeaderboard(limit);
+    res.json(leaderboard);
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+    res.status(500).json({ error: 'Failed to fetch leaderboard' });
+  }
+});
+
+// Add new endpoint for player stats
+app.get('/stats/:userId', async (req, res) => {
+  try {
+    const stats = await PlayerStats.getStats(req.params.userId);
+    if (!stats) {
+      res.status(404).json({ error: 'Player stats not found' });
+      return;
+    }
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching player stats:', error);
+    res.status(500).json({ error: 'Failed to fetch player stats' });
+  }
+});
+
+// Add these routes before the socket.io setup
+app.get('/api/username/check/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const isAvailable = await PlayerStats.isUsernameAvailable(username);
+    res.json({ available: isAvailable });
+  } catch (error) {
+    console.error('Error checking username:', error);
+    res.status(500).json({ error: 'Failed to check username availability' });
+  }
+});
+
+app.put('/api/username/update', async (req, res) => {
+  try {
+    const { userId, newUsername } = req.body;
+    if (!userId || !newUsername) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const updatedStats = await PlayerStats.updateUsername(userId, newUsername);
+    res.json(updatedStats);
+  } catch (error) {
+    console.error('Error updating username:', error);
+    if (error.message === 'Username already taken') {
+      res.status(409).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: 'Failed to update username' });
+    }
+  }
 });
 
 const PORT = process.env.PORT || 3001;

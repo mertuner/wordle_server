@@ -27,10 +27,10 @@ const io = new Server(httpServer, {
     methods: ["GET", "POST", "PUT"]
   },
   // Socket.io configuration
-  pingTimeout: 20000,
-  pingInterval: 10000,
-  transports: ['websocket'],
-  allowUpgrades: false,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'],
+  allowUpgrades: true,
   upgradeTimeout: 10000,
   reconnection: true,
   reconnectionAttempts: 5,
@@ -38,10 +38,14 @@ const io = new Server(httpServer, {
   maxHttpBufferSize: 1e8,
   path: '/socket.io/',
   connectTimeout: 45000,
-  allowEIO3: true,
-  perMessageDeflate: {
-    threshold: 32768
-  }
+  allowEIO3: true
+});
+
+// Add error handling for socket server
+io.engine.on("connection_error", (err) => {
+  console.log('Connection error:', err.req);      // the request object
+  console.log('Error message:', err.code);     // the error code
+  console.log('Error context:', err.context);  // some additional error context
 });
 
 // Store active game rooms
@@ -209,6 +213,14 @@ function cleanupPlayer(playerId) {
 async function handleMatchmaking(socket) {
   console.log('\n🎯 Player joining matchmaking');
   console.log('Player ID:', socket.id);
+  console.log('User ID:', socket.userId);
+  
+  // Verify player is authenticated
+  if (!socket.userId) {
+    console.log('❌ Player not authenticated');
+    socket.emit('matchmakingError', 'Not authenticated');
+    return;
+  }
   
   // Clean up any existing game state for this socket
   cleanupPlayer(socket.id);
@@ -216,9 +228,20 @@ async function handleMatchmaking(socket) {
   // Mark this socket as matchmaking
   socketTypes.set(socket.id, 'matchmaking');
   
-  // Add player to matchmaking queue
-  matchmakingQueue.push(socket.id);
-  console.log('Queue after adding player:', matchmakingQueue);
+  // Clean up disconnected players from queue
+  const connectedPlayers = matchmakingQueue.filter(playerId => {
+    const playerSocket = io.sockets.sockets.get(playerId);
+    return playerSocket?.connected && playerSocket.userId;
+  });
+  matchmakingQueue.length = 0;
+  matchmakingQueue.push(...connectedPlayers);
+  
+  // Add player to matchmaking queue if not already in it
+  if (!matchmakingQueue.includes(socket.id)) {
+    matchmakingQueue.push(socket.id);
+    console.log('Queue after adding player:', matchmakingQueue);
+    socket.emit('matchmakingJoined');
+  }
   
   // If we have 2 players, create a game
   if (matchmakingQueue.length >= 2) {
@@ -229,11 +252,12 @@ async function handleMatchmaking(socket) {
     console.log('Player 1:', player1);
     console.log('Player 2:', player2);
     
-    // Verify both players are still connected
+    // Verify both players are still connected and authenticated
     const player1Socket = io.sockets.sockets.get(player1);
     const player2Socket = io.sockets.sockets.get(player2);
     
-    if (player1Socket?.connected && player2Socket?.connected) {
+    if (player1Socket?.connected && player2Socket?.connected && 
+        player1Socket.userId && player2Socket.userId) {
       try {
         // Create a new room for these players
         const roomCode = createGameRoom(player1, player2);
@@ -268,20 +292,22 @@ async function handleMatchmaking(socket) {
         if (player1Socket?.connected) {
           socketTypes.set(player1, 'matchmaking');
           matchmakingQueue.unshift(player1);
+          player1Socket.emit('matchmakingError', 'Failed to start game');
         }
         if (player2Socket?.connected) {
           socketTypes.set(player2, 'matchmaking');
           matchmakingQueue.unshift(player2);
+          player2Socket.emit('matchmakingError', 'Failed to start game');
         }
       }
     } else {
-      console.log('One or both players disconnected during matchmaking');
-      // Put connected players back in queue
-      if (player1Socket?.connected) {
+      console.log('One or both players disconnected or not authenticated during matchmaking');
+      // Put connected and authenticated players back in queue
+      if (player1Socket?.connected && player1Socket.userId) {
         socketTypes.set(player1, 'matchmaking');
         matchmakingQueue.unshift(player1);
       }
-      if (player2Socket?.connected) {
+      if (player2Socket?.connected && player2Socket.userId) {
         socketTypes.set(player2, 'matchmaking');
         matchmakingQueue.unshift(player2);
       }
@@ -479,11 +505,12 @@ io.on('connection', (socket) => {
   });
 
   // Handle player guess
-  socket.on('makeGuess', ({ roomCode, guess }) => {
+  socket.on('makeGuess', ({ roomCode, guess, guessNumber }) => {
     console.log('\n📝 === PLAYER MAKING GUESS ===');
     console.log('Player ID:', socket.id);
     console.log('Room code:', roomCode);
     console.log('Guess:', guess);
+    console.log('Guess number:', guessNumber);
     console.log('Socket type:', socketTypes.get(socket.id));
     console.log('Room exists:', gameRooms.has(roomCode));
 
@@ -515,6 +542,7 @@ io.on('connection', (socket) => {
     console.log('\n✅ === VALID GUESS ===');
     console.log('Room players:', room.players);
     console.log('Socket room mapping:', socketRooms.get(socket.id));
+    console.log('Room is quick match:', room.isQuickMatch);
     console.log('===================\n');
 
     const playerNumber = room.players.indexOf(socket.id) + 1;
@@ -529,14 +557,17 @@ io.on('connection', (socket) => {
     console.log('To room:', roomCode);
     console.log('From player:', socket.id);
     console.log('Player number:', playerNumber);
-    console.log('Guess number:', playerGuesses.length);
+    console.log('Guess number:', guessNumber);
+    console.log('Is quick match:', room.isQuickMatch);
     console.log('============================\n');
 
+    // Emit guess update to all players in the room
     io.to(roomCode).emit('guessUpdate', {
       playerId: socket.id,
       playerNumber,
       guess,
-      guessNumber: playerGuesses.length
+      guessNumber: guessNumber - 1, // Convert to 0-based index
+      isQuickMatch: room.isQuickMatch
     });
 
     const isCorrect = guess.toUpperCase() === room.targetWord;
@@ -617,15 +648,28 @@ io.on('connection', (socket) => {
   // Add handler for player authentication
   socket.on('authenticate', async ({ userId, username }) => {
     try {
+      console.log('\n🔑 Authentication attempt');
+      console.log('User ID:', userId);
+      console.log('Username:', username);
+
+      if (!userId || !username) {
+        console.log('❌ Missing user data');
+        socket.emit('authentication_error', 'Missing user data');
+        return;
+      }
+
       let stats = await PlayerStats.getStats(userId);
       if (!stats) {
+        console.log('Creating new stats for user');
         stats = await PlayerStats.createStats(userId, username);
       }
+      
       socket.userId = userId; // Store userId in socket for later use
+      console.log('✅ Authentication successful');
       socket.emit('authenticated', { stats });
     } catch (error) {
-      console.error('Authentication error:', error);
-      socket.emit('error', { message: 'Authentication failed' });
+      console.error('❌ Authentication error:', error);
+      socket.emit('authentication_error', error.message || 'Authentication failed');
     }
   });
 

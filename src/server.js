@@ -278,14 +278,34 @@ async function handleMatchmaking(socket) {
         console.log('Room players:', room.players);
         console.log('Target word:', room.targetWord);
         
+        // Get player stats for opponent data
+        const player1Stats = await PlayerStats.getStats(player1Socket.userId);
+        const player2Stats = await PlayerStats.getStats(player2Socket.userId);
+        
         // Notify both players that the game is starting
-        io.to(roomCode).emit('gameStart', {
+        player1Socket.emit('gameStart', {
           targetWord: room.targetWord,
           players: room.players,
-          roomCode: roomCode
+          roomCode: roomCode,
+          opponentData: {
+            id: player2,
+            username: player2Stats?.username,
+            rating: player2Stats?.rating
+          }
         });
         
-        console.log('Game start event emitted');
+        player2Socket.emit('gameStart', {
+          targetWord: room.targetWord,
+          players: room.players,
+          roomCode: roomCode,
+          opponentData: {
+            id: player1,
+            username: player1Stats?.username,
+            rating: player1Stats?.rating
+          }
+        });
+        
+        console.log('Game start events emitted');
       } catch (error) {
         console.error('Error during game start:', error);
         // Clean up if something goes wrong
